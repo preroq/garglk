@@ -391,9 +391,14 @@ void para(void)
 void para()
 #endif
 {
+#ifdef GLK
+  glk_put_char('\n');
+  glk_put_char('\n');
+#else
   if (col != 1)
     newline();
   newline();
+#endif
 }
 
 
@@ -1410,7 +1415,6 @@ static void eventchk()
   initstrings()
   start()
   init()
-  main()
 
 \*----------------------------------------------------------------------*/
 

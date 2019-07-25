@@ -10,7 +10,8 @@ CYGWIN =  -DCOMPILER=\"[CygWin32]\"
 CFLAGS = -g -Wall -funsigned-char $(CYGWIN) $(CRCLOG)
 
 LDFLAGS = -g $(CYGWIN) $(VERBOSE)
-LIB = ../../Glk/WinGlk/Glk.lib
+#LIB = ../../Glk/WinGlk/Glk.lib
+LIB = ../Glk/WinGlk/Glk.lib
 
 OBJECTS = arun.o \
 	main.o \
