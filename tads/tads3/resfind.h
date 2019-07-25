@@ -25,18 +25,24 @@ Modified
 #ifndef RESFIND_H
 #define RESFIND_H
 
+#ifdef __cplusplus
+ #define EXTERNC extern "C"
+#else
+ #define EXTERNC
+#endif
+
 /*
  *   Resource locator.  This gives the seek offset and size of a resource
  *   within a larger file. 
  */
-struct tads_resinfo
+typedef struct
 {
     /* seek location of start of resource */
     unsigned long seek_pos;
 
     /* size of resource in bytes */
     unsigned long siz;
-};
+} tads_resinfo;
 
 /*
  *   Find a multimedia resource with the given name in the given file.  The
@@ -50,7 +56,7 @@ struct tads_resinfo
  *   found; returns false if a resource with the given name doesn't exist in
  *   the file.  
  */
-int tads_find_resource_fp(osfildef *fp, const char *resname,
+EXTERNC int tads_find_resource_fp(osfildef *fp, const char *resname,
                           tads_resinfo *info);
 
 /*
@@ -61,8 +67,9 @@ int tads_find_resource_fp(osfildef *fp, const char *resname,
  *   found; returns false if a resource with the given name doesn't exist in
  *   the file.  
  */
-int tads_find_resource(const char *fname, const char *resname,
+EXTERNC int tads_find_resource(const char *fname, const char *resname,
                        tads_resinfo *info);
 
+#undef EXTERNC
 
 #endif /* RESFIND_H */

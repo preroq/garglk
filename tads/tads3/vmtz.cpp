@@ -1987,7 +1987,7 @@ void CVmTimeZone::query(vmtzquery *result, int32_t dayno, int32_t daytime,
 #if 0 /* Gargoyle: Modified from upstream. */
             result->set(tcur > 0 ? tcur - 1 : tcur);
 #else
-            result->set(tcur != 0 ? tcur - 1 : tcur);
+            result->set(tcur != (void *) 0 ? tcur - 1 : tcur);
 #endif
             return;
         }
