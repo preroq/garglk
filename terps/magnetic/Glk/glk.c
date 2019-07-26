@@ -5552,9 +5552,11 @@ ms_save_file (type8s * name, type8 * ptr, type16 size)
   /* Flush any pending buffered output. */
   gms_output_flush ();
 
+#ifndef FAB
   /* If there is no name, use Glk to prompt for one, and save. */
   if (!name)
     {
+#endif
       frefid_t fileref;
       strid_t stream;
 
@@ -5575,6 +5577,7 @@ ms_save_file (type8s * name, type8 * ptr, type16 size)
 
       glk_stream_close (stream, NULL);
       glk_fileref_destroy (fileref);
+#ifndef FAB
     }
 
   else
@@ -5613,6 +5616,7 @@ ms_save_file (type8s * name, type8 * ptr, type16 size)
 
       fclose (stream);
     }
+#endif
 
   return GMS_FILE_SUCCESS;
 }
@@ -5625,9 +5629,11 @@ ms_load_file (type8s * name, type8 * ptr, type16 size)
   /* Flush any pending buffered output. */
   gms_output_flush ();
 
+#ifndef FAB
   /* If there is no name, use Glk to prompt for one, and load. */
   if (!name)
     {
+#endif
       frefid_t fileref;
       strid_t stream;
 
@@ -5658,6 +5664,7 @@ ms_load_file (type8s * name, type8 * ptr, type16 size)
 
       glk_stream_close (stream, NULL);
       glk_fileref_destroy (fileref);
+#ifndef FAB
     }
 
   else
@@ -5681,6 +5688,7 @@ ms_load_file (type8s * name, type8 * ptr, type16 size)
 
       fclose (stream);
     }
+#endif
 
   return GMS_FILE_SUCCESS;
 }
