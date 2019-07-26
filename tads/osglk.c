@@ -2,6 +2,7 @@
  *                                                                            *
  * Copyright (C) 2006-2009 by Tor Andersson.                                  *
  * Copyright (C) 2010-2011 by Ben Cressey.                                    *
+ * Copyright (C) 2017 Tim Cadogan-Cowper.                                     *
  *                                                                            *
  * This file is part of Gargoyle.                                             *
  *                                                                            *
@@ -27,28 +28,24 @@
 
 #include "os.h"
 #include "glk.h"
+#include <android/log.h>
 
-/* for version strings */
-#include "trd.h"
-#include "vmvsn.h"
+//#define DEBUG_TADS
 
-static void redraw_windows(void);
-static void os_status_redraw(void);
-extern void os_banners_redraw(void);
+/* status mode flag */
+static int status_mode_ = 0;
 
-static char lbuf[256], rbuf[256];
-static int curwin = 0;
-static int curattr = 0;
+/* HTML mode flag */
+static int html_mode_ = 0;
+
+/*
+ *   Buffer containing score information for status line 
+ */
+static char status_score_buf_[256];
 
 winid_t mainwin;
-winid_t statuswin;
 
-glui32 mainfg;
-glui32 mainbg;
-
-glui32 statusfg;
-glui32 statusbg;
-
+extern void fab_set_html_mode(int on);
 
 /* ------------------------------------------------------------------------ */
 /*
@@ -61,62 +58,80 @@ glui32 statusbg;
  */
 int os_get_sysinfo(int code, void *param, long *result)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_get_sysinfo");
+#endif
+    *result = 0;
+    
     switch (code)
     {
         case SYSINFO_TEXT_HILITE:
-            *result = 1;
-            return TRUE;
         case SYSINFO_BANNERS:
             *result = 1;
-            return TRUE;
+            break;
+
+        case SYSINFO_AUDIO_FADE:
+        case SYSINFO_AUDIO_CROSSFADE:
+            /* We support fades and crossfades for everything except MIDI. */
+            *result = SYSINFO_AUDIOFADE_MPEG | SYSINFO_AUDIOFADE_OGG | SYSINFO_AUDIOFADE_WAV;
+            break;
+
         case SYSINFO_TEXT_COLORS:
             *result = SYSINFO_TXC_RGB;
-            return TRUE;
+            break;
 
-#ifdef USE_HTML
-        case SYSINFO_INTERP_CLASS:
-            *result = SYSINFO_ICLASS_HTML;
-            return TRUE;
         case SYSINFO_HTML:
-            *result = 1;
-            return TRUE;
-#else
+            *result = (int)glk_gestalt(gestalt_HTML, 0);
+            break;
+        
         case SYSINFO_INTERP_CLASS:
-            *result = SYSINFO_ICLASS_TEXTGUI;
-            return TRUE;
-        case SYSINFO_HTML:
-            *result = 0;
-            return TRUE;
-#endif
+            *result = glk_gestalt(gestalt_HTML, 0) ? SYSINFO_ICLASS_HTML : SYSINFO_ICLASS_TEXTGUI;
+            break;
 
+        case SYSINFO_MNG:
+        case SYSINFO_MNG_TRANS:
+        case SYSINFO_MNG_ALPHA:
+        case SYSINFO_PNG_TRANS:
+        case SYSINFO_PNG_ALPHA:
         case SYSINFO_JPEG:
         case SYSINFO_PNG:
+        case SYSINFO_PREF_IMAGES:
+            *result = (int)glk_gestalt(gestalt_Graphics, 0);
+            break;
+
+        case SYSINFO_OGG:
         case SYSINFO_WAV:
         case SYSINFO_MIDI:
         case SYSINFO_WAV_MIDI_OVL:
         case SYSINFO_WAV_OVL:
-        case SYSINFO_PREF_IMAGES:
         case SYSINFO_PREF_SOUNDS:
-        case SYSINFO_PREF_MUSIC:
-        case SYSINFO_PREF_LINKS:
+            *result = (int)glk_gestalt(gestalt_Sound2, 0);
+            break;
+
         case SYSINFO_MPEG:
         case SYSINFO_MPEG1:
         case SYSINFO_MPEG2:
         case SYSINFO_MPEG3:
+        case SYSINFO_PREF_MUSIC:
+            *result = (int)glk_gestalt(gestalt_SoundMusic, 0);
+            break;
+
         case SYSINFO_LINKS_HTTP:
         case SYSINFO_LINKS_FTP:
         case SYSINFO_LINKS_NEWS:
         case SYSINFO_LINKS_MAILTO:
         case SYSINFO_LINKS_TELNET:
-        case SYSINFO_PNG_TRANS:
-        case SYSINFO_PNG_ALPHA:
-        case SYSINFO_OGG:
-            *result = 0;
-            return TRUE;
+        case SYSINFO_PREF_LINKS:
+            *result = (int)glk_gestalt(gestalt_Hyperlinks, 0);
+            break;
 
         default:
-            return FALSE;
+            // We didn't recognize the code
+            return false;
     }
+    
+    // We recognized the code.
+    return true;
 }
 
 
@@ -138,41 +153,16 @@ int os_get_sysinfo(int code, void *param, long *result)
 int os_init(int *argc, char *argv[], const char *prompt,
             char *buf, int bufsiz)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_init");
+#endif
     mainwin = glk_window_open(0, 0, 0, wintype_TextBuffer, 0);
-
     if (!mainwin)
     {
-        fprintf(stderr, "fatal: could not open window!\n");
+        __android_log_write(ANDROID_LOG_ERROR, "osglk.c - os_init", "fatal: could not open main window.");
         glk_exit();
     }
-
-    /* get default colors for main window */
-    if (!glk_style_measure(mainwin, style_Normal, stylehint_TextColor, &mainfg))
-        mainfg = 0;
-
-    if (!glk_style_measure(mainwin, style_Normal, stylehint_BackColor, &mainbg))
-        mainbg = 0;
-
-    /* get default colors for status window */
-    statuswin = glk_window_open(mainwin,
-            winmethod_Above | winmethod_Fixed, 1,
-            wintype_TextGrid, 0);
-
-    if (!glk_style_measure(statuswin, style_Normal, stylehint_TextColor, &statusfg))
-        statusfg = 0;
-
-    if (!glk_style_measure(statuswin, style_Normal, stylehint_BackColor, &statusbg))
-        statusbg = 0;
-
-    /* close statuswin; reopened on request */
-    glk_window_close(statuswin, 0);
-
-    statuswin = NULL;
-
     glk_set_window(mainwin);
-
-    strcpy(rbuf, "");
-
     return 0;
 }
 
@@ -186,10 +176,57 @@ int os_init(int *argc, char *argv[], const char *prompt,
  */
 void os_uninit(void)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_uninit");
+#endif
 }
 
+/* 
+ *   Pause prior to exit, if desired.  This is meant to be called by
+ *   portable code just before the program is to be terminated; it can be
+ *   implemented to show a prompt and wait for user acknowledgment before
+ *   proceeding.  This is useful for implementations that are using
+ *   something like a character-mode terminal window running on a graphical
+ *   operating system: this gives the implementation a chance to pause
+ *   before exiting, so that the window doesn't just disappear
+ *   unceremoniously.
+ *   
+ *   This is allowed to do nothing at all.  For regular character-mode
+ *   systems, this routine usually doesn't do anything, because when the
+ *   program exits, the terminal will simply return to the OS command
+ *   prompt; none of the text displayed just before the program exited will
+ *   be lost, so there's no need for any interactive pause.  Likewise, for
+ *   graphical systems where the window will remain open, even after the
+ *   program exits, until the user explicitly closes the window, there's no
+ *   need to do anything here.
+ *   
+ *   If this is implemented to pause, then this routine MUST show some kind
+ *   of prompt to let the user know we're waiting.  In the simple case of a
+ *   text-mode terminal window on a graphical OS, this should simply print
+ *   out some prompt text ("Press a key to exit...") and then wait for the
+ *   user to acknowledge the prompt (by pressing a key, for example).  For
+ *   graphical systems, the prompt could be placed in the window's title
+ *   bar, or status-bar, or wherever is appropriate for the OS.  
+ */
+void os_expause(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_expause");
+#endif
+  /* Don't do anything */
+}
+
+/* 
+ *   Terminate.  This should exit the program with the given exit status.
+ *   In general, this should be equivalent to the standard C library
+ *   exit() function, but we define this interface to allow the OS code to
+ *   do any necessary pre-termination cleanup.  
+ */
 void os_term(int status)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_term");
+#endif
     glk_exit();
 }
 
@@ -257,38 +294,165 @@ void os_term(int status)
  *   The routine need not check for any other special characters.
  *   
  */
-
 void os_printz(const char *str)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_printz");
+#endif
+    /* from oshtml.cpp */
+
+    /* use our base counted-length writer */
     os_print(str, strlen(str));
 }
 
 void os_print(const char *str, size_t len)
 {
-    if (curwin == 0 && str)
-        os_put_buffer((unsigned char *)str, len);
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_print");
+#endif
+    /* from oshtml.cpp */
+    if (!str) {  return; }
+    
+    switch (status_mode_) {
+        case 0:
+            /* display the entire string normally */
+            break;
+        case 1:
+            /* skip any leading newlines */
+            for ( ; len != 0 && *str == '\n' ; ++str, --len) ;
 
-    if (curwin == 1)
-    {
-        const char *p;
-        size_t      rem, max;
+            /* stop at the first newline after any other characters */
+            if (len != 0) {
+                const char *p;
+                size_t rem;
 
-        /* The string requires some fiddling for the status window */
-        for (p = str, rem = len ; rem != 0 && *p == '\n'; p++, --rem)
-            ;
-        if (rem != 0 && p[rem-1] == '\n')
-            --rem;
+                /* scan for a newline */
+                for (p = str, rem = len ; rem != 0 && *p != '\n' ; ++p, --rem) ;
 
-        /* if that leaves anything, update the statusline */
-        if (rem != 0)
-        {
-            max = sizeof(lbuf) - strlen(lbuf) - 1;
-            strncat(lbuf, p, rem > max ? max : rem);
-            os_status_redraw();
-        }
+                /* if we found one, note it */
+                if (rem != 0 && *p == '\n') {
+                    /* switch to status mode 2 for subsequent output */
+                    status_mode_ = 2;
+
+                    /* display only the part before the newline */
+                    len = p - str;
+                }
+            }
+            break;
+        case 2:
+        default:
+            /* 
+             *   suppress everything in status mode 2 - this is the part after
+             *   the initial line of status text, which is hidden until we
+             *   explicitly return to the main text area by switching to status
+             *   mode 0 
+             */
+            return;
+    }
+
+    /* display the string */
+    if (len > 0) {
+        tads_put_string(str, len);
     }
 }
 
+void oshtml_dbg_vprintf(const char *fmt, va_list argptr)
+{
+    char buf[1024];
+    char *p;
+    
+    /* format the message */
+    vsprintf(buf, fmt, argptr);
+
+    /* 
+     *   Remove any bold on/off sequences from the buffer.  Bold sequences
+     *   are interpreted by the HTML parser as tag open/close sequences,
+     *   so they can cause weird problems. 
+     */
+    for (p = buf ; *p != '\0' ; ++p)
+    {
+        /* if it's a bold on/off sequence, convert it to a space */
+        if (*p == 1 || *p == 2)
+            *p = ' ';
+    }
+
+    /* display it */
+    __android_log_write(ANDROID_LOG_DEBUG, "TADS debugger: oshtml.cpp", buf);
+}
+
+/*
+ *   printf to debug log window
+ */
+void oshtml_dbg_printf(const char *fmt, ...)
+{
+    /* from oshtml.cpp */
+    va_list argptr;
+
+    va_start(argptr, fmt);
+    oshtml_dbg_vprintf(fmt, argptr);
+    va_end(argptr);
+}
+
+/*
+ *   Print to the debugger console.  These routines are for interactive
+ *   debugger builds only: they display the given text to a separate window
+ *   within the debugger UI (separate from the main game command window)
+ *   where the debugger displays status information specific to the debugging
+ *   session (such as compiler/build output, breakpoint status messages,
+ *   etc).  For example, TADS Workbench on Windows displays these messages in
+ *   its "Debug Log" window.
+ *   
+ *   These routines only need to be implemented for interactive debugger
+ *   builds, such as TADS Workbench on Windows.  These can be omitted for
+ *   regular interpreter builds.  
+ */
+void os_dbg_printf(const char *fmt, ...)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_dbg_printf");
+#endif
+    /* from oshtml.cpp */
+    va_list argptr;
+
+    va_start(argptr, fmt);
+    oshtml_dbg_vprintf(fmt, argptr);
+    va_end(argptr);
+}
+
+void os_dbg_vprintf(const char *fmt, va_list argptr)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_dbg_vprintf");
+#endif
+    /* from oshtml.cpp */
+    oshtml_dbg_vprintf(fmt, argptr);
+}
+
+/*
+ *   internal routine to set the status mode 
+ */
+static void oshtml_status_mode(int flag)
+{
+    /* from oshtml.cpp */
+    static const char banner_start[] =
+        "<banner id=statusline height=previous border>"
+        "<body bgcolor=statusbg text=statustext><b>";
+    static const char banner_score[] = "</b><tab align=right><i>";
+    static const char banner_end[] = "</i><br height=0></banner>";
+
+    /* start or end the status line banner */
+    if (flag) {
+        /* start the banner */
+        fab_set_html_mode(1);
+        glk_put_string(banner_start);
+    } else {
+        /* add the score to the banner */
+        glk_put_string(banner_score);
+        glk_put_string(status_score_buf_);
+        glk_put_string(banner_end);
+        fab_set_html_mode(0);
+    }
+}
 
 /* 
  *   Set the status line mode.  There are three possible settings:
@@ -309,28 +473,45 @@ void os_print(const char *str, size_t len)
  *   os_printz() must simply be ignored, and not displayed at all.  This mode
  *   stays in effect until an explicit call to os_status().  
  */
-
 void os_status(int stat)
 {
-    curwin = stat;
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_status");
+#endif
+    /* from oshtml.cpp */
 
-    if (stat == 1)
-    {
-        if (statuswin == NULL)
-        {
-            glk_stylehint_set(wintype_TextGrid, style_User1, stylehint_ReverseColor, 1);
-            statuswin = glk_window_open(mainwin,
-                                        winmethod_Above | winmethod_Fixed, 1,
-                                        wintype_TextGrid, 0);
-        }
-        strcpy(lbuf, "");
+    /* 
+     *   If we're in HTML mode, don't do any automatic status line
+     *   generation -- let the game do the status line the way it wants,
+     *   without any predefined handling from the run-time system 
+     */
+    if (html_mode_)
+        return;
+
+    /* see what mode we're setting */
+    switch(stat) {
+        case 0:
+        default:
+            /* turn off status line mode */
+            status_mode_ = 0;
+            oshtml_status_mode(0);
+            break;
+        case 1:
+            /* turn on status line mode */
+            status_mode_ = 1;
+            oshtml_status_mode(1);
+            break;
     }
 }
 
 /* get the status line mode */
 int os_get_status()
 {
-    return curwin;
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_get_status");
+#endif
+    /* from oshtml.cpp */
+    return status_mode_;
 }
 
 /* 
@@ -343,52 +524,89 @@ int os_get_status()
  */
 void os_score(int score, int turncount)
 {
-    char buf[40];
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_score");
+#endif
+    /* from oshtml.cpp */
+    char buf[128];
+    
+    /* build the default status line score format */
     sprintf(buf, "%d/%d", score, turncount);
+
+    /* set the score string */
     os_strsc(buf);
 }
 
 /* display a string in the score area in the status line */
 void os_strsc(const char *p)
 {
-    snprintf(rbuf, sizeof rbuf, "%s", p);
-    os_status_redraw();
-}
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_strsc");
+#endif
+    /* from oshtml.cpp */
 
-static void os_status_redraw(void)
-{
-    char fmt[32];
-    char buf[256];
-    glui32 wid;
-    glui32 div;
-    int i;
-
-    if (!statuswin)
-        return;
-
-    glk_window_get_size(statuswin, &wid, NULL);
-    div = wid - strlen(rbuf) - 3;
-
-    sprintf(fmt, " %%%ds %%s ", - (int)div);
-    sprintf(buf, fmt, lbuf, rbuf);
-
-    glk_window_clear(statuswin);
-    glk_set_window(statuswin);
-    glk_set_style(style_User1);
-    os_put_buffer(buf, strlen(buf));
-    glk_set_window(mainwin);
-}
-
-static void redraw_windows(void)
-{
-    os_status_redraw();
-    os_banners_redraw();
+    /* 
+     *   remember the score string - it will be used the next time we
+     *   rebuild the status line 
+     */
+    int len = strlen(p);
+    if (len > sizeof(status_score_buf_))
+        len = sizeof(status_score_buf_) - sizeof(status_score_buf_[0]);
+    memcpy(status_score_buf_, p, len);
+    status_score_buf_[len / sizeof(status_score_buf_[0])] = '\0';
 }
 
 /* clear the screen */
-void oscls(void)
+void oscls(void) {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "oscls");
+#endif
+    fab_new_html_page(mainwin);
+}
+
+/* redraw the screen */
+void os_redraw(void)
 {
-    glk_window_clear(mainwin);
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_redraw");
+#endif
+  /* do nothing */
+}
+
+/* flush any buffered display output */
+void os_flush(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_flush");
+#endif
+  /* do nothing */
+}
+
+/*
+ *   Update the display - process any pending drawing immediately.  This
+ *   only needs to be implemented for operating systems that use
+ *   event-driven drawing based on window invalidations; the Windows and
+ *   Macintosh GUI's both use this method for drawing window contents.
+ *   
+ *   The purpose of this routine is to refresh the display prior to a
+ *   potentially long-running computation, to avoid the appearance that the
+ *   application is frozen during the computation delay.
+ *   
+ *   Platforms that don't need to process events in the main thread in order
+ *   to draw their window contents do not need to do anything here.  In
+ *   particular, text-mode implementations generally don't need to implement
+ *   this routine.
+ *   
+ *   This routine doesn't absolutely need a non-empty implementation on any
+ *   platform, but it will provide better visual feedback if implemented for
+ *   those platforms that do use event-driven drawing.  
+ */
+void os_update_display()
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_update_display");
+#endif
+  /* do nothing */
 }
 
 /* ------------------------------------------------------------------------ */
@@ -401,15 +619,28 @@ void oscls(void)
  */
 void os_set_text_attr(int attr)
 {
-    curattr = attr;
-    if (curattr & OS_ATTR_BOLD && curattr & OS_ATTR_ITALIC)
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_set_text_attr");
+#endif
+    /* modified version of code from oshtml.cpp and tads2/glk/os_glk.c */
+
+    /* 
+     *   ignore attribute settings in HTML mode - calls must use appropriate
+     *   HTML tags instead 
+     */
+    if (html_mode_)
+        return;
+
+    /* try to map attributes to Glk styles */
+    if ((attr & OS_ATTR_BOLD) && (attr & OS_ATTR_ITALIC)) {
         glk_set_style(style_Alert);
-    else if (curattr & OS_ATTR_BOLD)
+    } else if (attr & OS_ATTR_BOLD) {
         glk_set_style(style_Subheader);
-    else if (curattr & OS_ATTR_ITALIC)
+    } else if (attr & OS_ATTR_ITALIC) {
         glk_set_style(style_Emphasized);
-    else
+    } else {
         glk_set_style(style_Normal);
+    }
 }
 
 /*
@@ -431,6 +662,10 @@ void os_set_text_attr(int attr)
  */
 void os_set_text_color(os_color_t fg, os_color_t bg)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_set_text_color");
+#endif
+    /* like oshtml.cpp, we ignore this - callers must use HTML tags to set colors */
 }
 
 /*
@@ -450,6 +685,32 @@ void os_set_text_color(os_color_t fg, os_color_t bg)
  */
 void os_set_screen_color(os_color_t color)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_set_screen_color");
+#endif
+    /* like oshtml.cpp, we ignore this - callers must use HTML tags to set colors */
+}
+
+/* 
+ *   os_plain() - Use plain ascii mode for the display.  If possible and
+ *   necessary, turn off any text formatting effects, such as cursor
+ *   positioning, highlighting, or coloring.  If this routine is called,
+ *   the terminal should be treated as a simple text stream; users might
+ *   wish to use this mode for things like text-to-speech converters.
+ *   
+ *   Purely graphical implementations that cannot offer a textual mode
+ *   (such as Mac OS or Windows) can ignore this setting.
+ *   
+ *   If this routine is to be called, it must be called BEFORE os_init().
+ *   The implementation should set a flag so that os_init() will know to
+ *   set up the terminal for plain text output.  
+ */
+void os_plain(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_plain");
+#endif
+    /* like oshtml.cpp, we ignore this -- we can only use the HTML mode */
 }
 
 /*
@@ -463,9 +724,11 @@ void os_set_screen_color(os_color_t color)
  */
 void os_set_title(const char *title)
 {
-#ifdef GARGLK
-    garglk_set_story_title(title);
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_set_title");
 #endif
+    /* like oshtml.cpp, we can ignore title settings from the high-level output formatter
+     * layer, since we parse the title tag ourselves in the underlying HTML layer. */
 }
 
 /*
@@ -488,8 +751,112 @@ void os_set_title(const char *title)
  */
 void os_more_prompt()
 {
-    os_printz("\n[more]\n");
-    os_waitc();
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_more_prompt");
+#endif
+    /* Modified version of tads2/glk/os_glk.c */
+    int done;
+
+    /* display the "MORE" prompt */
+    /* (Actually don't do this because we'd need to write
+     * another GLK extension function to track it and remove it
+     * after the user hits a key. Maybe one day, but not today) */
+    /* os_printz("[More]"); */
+    
+    /* wait for a keystroke */
+    for (done = 0; !done; )
+    {
+        os_event_info_t evt;
+
+        /* get an event */
+        switch(os_get_event(0, 0, &evt))
+        {
+        case OS_EVT_KEY:
+            /* stop waiting, show one page */
+            done = 1;
+            break;
+
+        case OS_EVT_EOF:
+            /* end of file - there's nothing to wait for now */
+            done = 1;
+            break;
+
+        default:
+            /* ignore other events */
+            break;
+        }
+    }
+
+   /* if (html_mode_ == 1) {
+      os_printz("<BR HEIGHT=0>");
+    } else {
+      os_printz("\n");
+    } */
+}
+
+/*
+ *   Enter HTML mode.  This is only used when the run-time is compiled
+ *   with the USE_HTML flag defined.  This call instructs the renderer
+ *   that HTML sequences should be parsed; until this call is made, the
+ *   renderer should not interpret output as HTML.  Non-HTML
+ *   implementations do not need to define this routine, since the
+ *   run-time will not call it if USE_HTML is not defined.  
+ */
+void os_start_html(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_start_html");
+#endif
+    fab_set_html_mode(1);
+
+    /* note that we're in HTML mode */
+    html_mode_ = 1;
+}
+
+/* exit HTML mode */
+void os_end_html(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_end_html");
+#endif
+    fab_set_html_mode(0);
+
+    /* note that we're not in HTML mode */
+    html_mode_ = 0;
+}
+
+/*
+ *   Set non-stop mode.  This tells the OS layer that it should disable any
+ *   MORE prompting it would normally do.
+ *   
+ *   This routine is needed only when the OS layer handles MORE prompting; on
+ *   character-mode platforms, where the prompting is handled in the portable
+ *   console layer, this can be a dummy implementation.  
+ */
+void os_nonstop_mode(int flag)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_nonstop_mode");
+#endif
+  /* TODO */
+}
+
+/* 
+ *   Set busy cursor.  If 'flag' is true, provide a visual representation
+ *   that the system or application is busy doing work.  If 'flag' is
+ *   false, remove any visual "busy" indication and show normal status.
+ *   
+ *   We provide a prototype here if your osxxx.h header file does not
+ *   #define a macro for os_csr_busy.  On many systems, this function has
+ *   no effect at all, so the osxxx.h header file simply #define's it to
+ *   do an empty macro.  
+ */
+void os_csr_busy(int flag)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_csr_busy");
+#endif
+  /* We don't yet support this, and probably never will */
 }
 
 /* ------------------------------------------------------------------------ */
@@ -513,28 +880,70 @@ void os_more_prompt()
  *   to apply a default suffix on systems that use suffixes to indicate
  *   file type.  If OSFTUNK is specified, it means that no filtering
  *   should be performed, and no default suffix should be applied.  
+ *
+ *   os_askfile status codes:
+ *
+ *     OS_AFE_SUCCESS 
+ *       
+ *       Success.
+ *
+ *     OS_AFE_FAILURE
+ *
+ *       Generic failure - this is largely provided for compatibility with
+ *       past versions, in which only zero and non-zero error codes were
+ *       meaningful; since TRUE is defined as 1 on most platforms, we assume
+ *       that 1 is probably the generic non-zero error code that most OS
+ *       implementations have traditionally used.  In addition, this can be
+ *       used to indicate any other error for which there is no more specific
+ *       error code. 
+ *
+ *    OS_AFE_CANCEL
+ *
+ *       User cancelled. 
+ *
+ *  os_askfile prompt types:
+ *
+ *    OS_AFP_OPEN
+ *
+ *       Choose an existing file to open for reading.
+ *
+ *    OS_AFP_SAVE
+ *
+ *       Choose a filename for saving to a file.
+ *
  */
 int os_askfile(const char *prompt, char *fname_buf, int fname_buf_len,
                int prompt_type, os_filetype_t file_type)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_askfile");
+#endif
+    /* Modified version of Gargoyle (and tads2/glk/os_glk.c) source */
     frefid_t fileref;
     glui32 gprompt, gusage;
 
-    if (prompt_type == OS_AFP_OPEN)
+    if (prompt_type == OS_AFP_OPEN) {
         gprompt = filemode_Read;
-    else
+    } else {
         gprompt = filemode_ReadWrite;
+    }
 
-    if (file_type == OSFTSAVE || file_type == OSFTT3SAV)
+    /* TO DO: For now we assume that OSFTUNK is a save to ensure that we don't have issues with
+     * the odd game such as Babel which uses this extension for saves.  Of course
+     * that means it may break any games that use this for data.  Oh well, one more thing
+     * to fix if we can ever find the time... */
+    if (file_type == OSFTSAVE || file_type == OSFTT3SAV || file_type == OSFTUNK) {
         gusage = fileusage_SavedGame;
-    else if (file_type == OSFTLOG || file_type == OSFTTEXT)
+    } else if (file_type == OSFTLOG || file_type == OSFTTEXT) {
         gusage = fileusage_Transcript;
-    else
+    } else {
         gusage = fileusage_Data;
+    }
 
     fileref = glk_fileref_create_by_prompt(gusage, gprompt, 0);
-    if (fileref == NULL)
+    if (fileref == NULL) {
         return OS_AFE_CANCEL;
+    }
 
     strcpy(fname_buf, garglk_fileref_get_name(fileref));
 
@@ -552,19 +961,16 @@ int os_askfile(const char *prompt, char *fname_buf, int fname_buf_len,
  */
 unsigned char *os_gets(unsigned char *buf, size_t buflen)
 {
-    event_t event;
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_gets");
+#endif 
+    int flags = 0;
+    int res = 0;
 
-    os_get_buffer(buf, buflen, 0);
+    flags = tads_get_input(buf, buflen, 0, mainwin, 0);
+    res = ((flags & 0x10) == 0x10);
 
-    do
-    {
-        glk_select(&event);
-        if (event.type == evtype_Arrange)
-            redraw_windows();
-    }
-    while (event.type != evtype_LineInput);
-
-    return os_fill_buffer(buf, event.val1);
+    return res > 0 ? buf : NULL;
 }
 
 /*
@@ -647,11 +1053,15 @@ static size_t timelen = 0;
 int os_gets_timeout(unsigned char *buf, size_t bufl,
                     unsigned long timeout_in_milliseconds, int use_timeout)
 {
-#if defined GLK_TIMERS && defined GLK_MODULE_LINE_ECHO
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_gets_timeout");
+#endif
+    /* Modified version of Gargoyle source */
     int timer = use_timeout ? timeout_in_milliseconds : 0;
     int timeout = 0;
     int initlen = 0;
-    event_t event;
+    int res = 0;
+    int flags = 0;
 
     /* restore saved buffer contents */
     if (timebuf)
@@ -664,33 +1074,9 @@ int os_gets_timeout(unsigned char *buf, size_t bufl,
         timebuf = 0;
     }
 
-    /* start timer and turn off line echo */
-    if (timer)
-    {
-        glk_request_timer_events(timer);
-        glk_set_echo_line_event(mainwin, 0);
-    }
-
-    os_get_buffer(buf, bufl, initlen);
-
-    do
-    {
-        glk_select(&event);
-        if (event.type == evtype_Arrange)
-            redraw_windows();
-        else if (event.type == evtype_Timer && (timeout = 1))
-            glk_cancel_line_event(mainwin, &event);
-    }
-    while (event.type != evtype_LineInput);
-
-    char *res = os_fill_buffer(buf, event.val1);
-
-    /* stop timer and turn on line echo */
-    if (timer)
-    {
-        glk_request_timer_events(0);
-        glk_set_echo_line_event(mainwin, 1);
-    }
+    flags = tads_get_input(buf, bufl, initlen, mainwin, timer);
+    timeout = ((flags & 0x01) == 0x01);
+    res = ((flags & 0x10) == 0x10);
 
     /* save or print buffer contents */
     if (res && timer)
@@ -711,9 +1097,6 @@ int os_gets_timeout(unsigned char *buf, size_t bufl,
     }
 
     return timeout ? OS_EVT_TIMEOUT : res ? OS_EVT_LINE : OS_EVT_EOF;
-#else
-    return OS_EVT_NOTIMEOUT;
-#endif
 }
 
 /*
@@ -739,7 +1122,11 @@ int os_gets_timeout(unsigned char *buf, size_t bufl,
  */
 void os_gets_cancel(int reset)
 {
-#if defined GLK_TIMERS && defined GLK_MODULE_LINE_ECHO
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_gets_cancel");
+#endif
+    /* From Gargoyle source */
+
     if (timebuf)
     {
         glk_set_style(style_Input);
@@ -753,7 +1140,6 @@ void os_gets_cancel(int reset)
             timebuf = 0;
         }
     }
-#endif
 }
 
 /* 
@@ -779,10 +1165,17 @@ void os_gets_cancel(int reset)
  */
 static int glktotads(unsigned int key)
 {
-    if (key < 256)
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "glktotads");
+#endif
+    /* Based on tads2/glk/oss_glk.c */
+
+    /* Characters 0 - 255 we return per normal */
+    if (key < 256) {
         return key;
-    switch (key)
-    {
+    }
+
+    switch (key) {
         case keycode_Up:
             return CMD_UP;
         case keycode_Down:
@@ -825,26 +1218,25 @@ static int glktotads(unsigned int key)
 }
 
 static int bufchar = 0;
-static int waitchar = 0;
 static int timechar = 0;
 
 static int getglkchar(void)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "getglkchar");
+#endif
+    /* Based on tads2/glk/oss_glk.c, with reference to Gargoyle source */
     event_t event;
 
     timechar = 0;
-
     glk_request_char_event(mainwin);
 
-    do
-    {
+    do {
         glk_select(&event);
-        if (event.type == evtype_Arrange)
-            redraw_windows();
-        else if (event.type == evtype_Timer)
+        if (event.type == evtype_Timer) {
             timechar = 1;
-    }
-    while (event.type != evtype_CharInput && event.type != evtype_Timer);
+        }
+    } while (event.type != evtype_CharInput && event.type != evtype_Timer);
 
     glk_cancel_char_event(mainwin);
 
@@ -853,30 +1245,33 @@ static int getglkchar(void)
 
 int os_getc(void)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_getc");
+#endif
+    /* Based on tads2/glk/oss_glk.c, with reference to Gargoyle source */
     unsigned int c;
 
-    if (bufchar)
-    {
+    if (bufchar) {
         c = bufchar;
         bufchar = 0;
         return c;
     }
 
-    c = waitchar ? waitchar : getglkchar();
-    waitchar = 0;
-
-    if (c == keycode_Return)
+    c = getglkchar();
+    
+    if (c == keycode_Return) {
         c = '\n';
-    else if (c == keycode_Tab)
+    } else if (c == keycode_Tab) {
         c = '\t';
-    else if (c == keycode_Escape)
+    } else if (c == keycode_Escape) {
         c = '\e';
+    }
 
-    if (c < 256)
+    if (c < 256) {
         return c;
+    }
 
     bufchar = glktotads(c);
-
     return 0;
 }
 
@@ -909,13 +1304,21 @@ int os_getc(void)
  */
 int os_getc_raw(void)
 {
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_getc_raw");
+#endif
+    /* Same as tads2/glk/os_glk.c */
     return os_getc();
 }
 
 /* wait for a character to become available from the keyboard */
 void os_waitc(void)
 {
-    waitchar = getglkchar();
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_waitc");
+#endif
+    /* Same as tads2/glk/os_glk.c */
+    os_getc();
 }
 
 /*
@@ -935,29 +1338,206 @@ void os_waitc(void)
 int os_get_event(unsigned long timeout_in_milliseconds, int use_timeout,
                  os_event_info_t *info)
 {
-#ifdef GLK_TIMERS
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_get_event");
+#endif
+    /* Based on Gargoyle source, with reference to tads2/glk/os_glk.c */
+
     /* start timer */
     int timer = use_timeout ? timeout_in_milliseconds : 0;
-    if (timer)
+    if (timer) {
         glk_request_timer_events(timer);
-#else
-    /* we can't handle timeouts */
-    if (use_timeout)
-        return OS_EVT_NOTIMEOUT;
-#endif
+    }
 
     /* get a key */
     info->key[0] = os_getc_raw();
-    if (info->key[0] == 0 && timechar == 0)
+    if (info->key[0] == 0 && timechar == 0) {
         info->key[1] = os_getc_raw();
+    }
 
-#ifdef GLK_TIMERS
     /* stop timer */
-    if (timer)
+    if (timer) {
         glk_request_timer_events(0);
-#endif
+    }
 
     /* return the event */
     return timechar ? OS_EVT_TIMEOUT : OS_EVT_KEY;
+}
+
+
+/* ------------------------------------------------------------------------ */
+/*
+ *   OS main entrypoint
+ */
+
+/*
+ *   Install/uninstall the break handler.  If possible, the OS code should
+ *   set (if 'install' is true) or clear (if 'install' is false) a signal
+ *   handler for keyboard break signals (control-C, etc, depending on
+ *   local convention).  The OS code should set its own handler routine,
+ *   which should note that a break occurred with an internal flag; the
+ *   portable code uses os_break() from time to time to poll this flag.
+ */
+void os_instbrk(int install)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_instbrk");
+#endif
+}
+
+/*
+ *   Check for user break ("control-C", etc) - returns true if a break is
+ *   pending, false if not.  If this returns true, it should "consume" the
+ *   pending break (probably by simply clearing the OS code's internal
+ *   break-pending flag).  
+ */
+int os_break(void)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_break");
+#endif
+    return 0;
+}
+
+/*
+ *   Yield CPU; returns TRUE if user requested an interrupt (a "control-C"
+ *   type of operation to abort the entire program), FALSE to continue.
+ *   Portable code should call this routine from time to time during lengthy
+ *   computations that don't involve any UI operations; if practical, this
+ *   routine should be invoked roughly every 10 to 100 milliseconds.
+ *
+ *   The purpose of this routine is to support "cooperative multitasking"
+ *   systems, such as pre-X MacOS, where it's necessary for each running
+ *   program to call the operating system explicitly in order to yield the
+ *   CPU from time to time to other concurrently running programs.  On
+ *   cooperative multitasking systems, a program can only lose control of
+ *   the CPU by making specific system calls, usually related to GUI events;
+ *   a program can never lose control of the CPU asynchronously.  So, a
+ *   program that performs lengthy computations without any UI interaction
+ *   can cause the rest of the system to freeze up until the computations
+ *   are finished; but if a compute-intensive program explicitly yields the
+ *   CPU from time to time, it allows other programs to remain responsive.
+ *   Yielding the CPU at least every 100 milliseconds or so will generally
+ *   allow the UI to remain responsive; yielding more frequently than every
+ *   10 ms or so will probably start adding noticeable overhead.
+ *
+ *   On single-tasking systems (such as MS-DOS), there's only one program
+ *   running at a time, so there's no need to yield the CPU; on virtually
+ *   every modern system, the OS automatically schedules CPU time without
+ *   the running programs having any say in the matter, so again there's no
+ *   need for a program to yield the CPU.  For systems where this routine
+ *   isn't needed, the system header should simply #define os_yield to
+ *   something like "((void)0)" - this will allow the compiler to completely
+ *   ignore calls to this routine for systems where they aren't needed.
+ *
+ *   Note that this routine is NOT meant to provide scheduling hinting to
+ *   modern systems with true multitasking, so a trivial implementation is
+ *   fine for any modern system.
+ */
+int os_yield(void)
+{
+   /* Fabularium will only ever run on a modern OS (Android), so no need
+    * to do anything here (and don't bother with the overheads of calling
+    * glk_tick) */
+    return 0;
+}
+
+/*
+ *   Set the default saved-game extension.  This routine will NOT be
+ *   called when we're using the standard saved game extension; this
+ *   routine will be invoked only if we're running as a stand-alone game,
+ *   and the game author specified a non-standard saved-game extension
+ *   when creating the stand-alone game.
+ *   
+ *   This routine is not required if the system does not use the standard,
+ *   semi-portable os0.c implementation.  Even if the system uses the
+ *   standard os0.c implementation, it can provide an empty routine here
+ *   if the system code doesn't need to do anything special with this
+ *   information.
+ *   
+ *   The extension is specified as a null-terminated string.  The
+ *   extension does NOT include the leading period.  
+ */
+void os_set_save_ext(const char *ext)
+{
+#ifdef DEBUG_TADS
+    __android_log_write(ANDROID_LOG_DEBUG, "osglk.c", "os_set_save_ext");
+#endif
+  /* We don't do anything */
+}
+
+
+/* ------------------------------------------------------------------------ */
+/*
+ *   External banner interface 
+ */
+void *os_banner_create(void *parent, int where, void *other, int wintype,
+                       int align, int siz, int siz_units,
+                       unsigned long style) {
+  return tadsban_create(parent, where, other, wintype, align, siz, siz_units, style);
+}
+
+int os_banner_get_charwidth(void *banner_handle) {
+  return tadsban_get_charwidth(banner_handle);
+}
+
+int os_banner_get_charheight(void *banner_handle) {
+  return tadsban_get_charheight(banner_handle);
+}
+
+int os_banner_getinfo(void *banner_handle, os_banner_info_t *info) {
+  return tadsban_getinfo(banner_handle, info);
+}
+
+void os_banner_delete(void *banner_handle) {
+  tadsban_delete(banner_handle);
+}
+
+void os_banner_orphan(void *banner_handle) {
+  tadsban_orphan(banner_handle);
+}
+
+void os_banner_clear(void *banner_handle) {
+  tadsban_clear(banner_handle);
+}
+
+void os_banner_disp(void *banner_handle, const char *txt, size_t len) {
+  tadsban_disp(banner_handle, txt, len);
+}
+
+void os_banner_set_attr(void *banner_handle, int attr) {
+  tadsban_set_attr(banner_handle, attr);
+}
+
+void os_banner_set_color(void *banner_handle, os_color_t fg, os_color_t bg) {
+  tadsban_set_color(banner_handle, fg, bg);
+}
+
+void os_banner_set_screen_color(void *banner_handle, os_color_t color) {
+  tadsban_set_screen_color(banner_handle, color);
+}
+
+void os_banner_flush(void *banner_handle) {
+  tadsban_flush(banner_handle);
+}
+
+void os_banner_set_size(void *banner_handle, int siz, int siz_units, int is_advisory) {
+  tadsban_set_size(banner_handle, siz, siz_units, is_advisory);
+}
+
+void os_banner_size_to_contents(void *banner_handle) {
+  tadsban_size_to_contents(banner_handle);
+}
+
+void os_banner_start_html(void *banner_handle) {
+  tadsban_start_html(banner_handle);
+}
+
+void os_banner_end_html(void *banner_handle) {
+  tadsban_end_html(banner_handle);
+}
+
+void os_banner_goto(void *banner_handle, int row, int col) {
+  tadsban_goto(banner_handle, row, col);
 }
 

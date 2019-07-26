@@ -72,6 +72,7 @@ extern "C" {
  *   Include the appropriate hardware-specific header. 
  */
 
+#ifndef FAB
 #ifdef __ppc__
 #define _M_PPC
 #else
@@ -80,6 +81,7 @@ extern "C" {
 #else
 #ifndef _M_IX86
 #define _M_IX86
+#endif
 #endif
 #endif
 #endif
@@ -118,6 +120,16 @@ extern "C" {
 #endif
 
 /* add others here */
+
+/*
+ *  The Fabularium app is defined to work on multiple architectures, especially
+ *  ARM, which doesn't have x86's tolerance for unaligned pointer dereferencing.
+ *  So we use the PPC definitions which are more strict, at the cost of slightly
+ *  worse performance.
+ */
+#ifdef FAB
+#include "h_ppc.h"
+#endif
 
 /* ------------------------------------------------------------------------ */
 /*
@@ -207,6 +219,11 @@ extern "C" {
 
 /* **************** add other systems here **************** */
 
+
+#ifdef FAB
+/* Fabularium-specific definitions are in osfab.h */
+#include "osfab.h"
+#endif
 
 /*
  *   Done with C linkage section (osifc.h has its own)
