@@ -12,6 +12,9 @@
 #include "glk.h"
 #include "glkio.h"
 
+winid_t glkMainWin;
+winid_t glkStatusWin;
+
 void glkio_printf(char *fmt, ...)
 {
   va_list argp;
